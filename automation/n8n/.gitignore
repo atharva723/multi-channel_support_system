@@ -1,0 +1,9 @@
+node_modules/
+.env
+
+# Local n8n data (database, encryption key, logs).
+# The SQLite DB stores your live workflows + credentials — keep it out of git.
+.n8n/
+
+# Exported credentials can contain secrets — never commit them.
+credentials/

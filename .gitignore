@@ -1,0 +1,28 @@
+# Python / backend
+backend/.venv/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+*.db
+*.sqlite3
+.env
+
+# Node / Expo mobile
+node_modules/
+mobile/.expo/
+mobile/dist/
+mobile/web-build/
+npm-debug.*
+*.log
+
+# n8n project-local data (SQLite DB + encryption key) and exported secrets
+automation/n8n/.n8n/
+automation/n8n/credentials/
+automation/n8n/.env
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

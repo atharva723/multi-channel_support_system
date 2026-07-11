@@ -1,0 +1,19 @@
+{
+  "name": "omnichannel-sentinel-n8n",
+  "version": "1.0.0",
+  "description": "Project-local self-hosted n8n for the Omnichannel AI Support Sentinel. Workflows are editable in VS Code and imported into the project-local .n8n SQLite DB.",
+  "private": true,
+  "scripts": {
+    "start": "dotenv -- n8n start",
+    "tunnel": "dotenv -- n8n start --tunnel",
+    "export": "dotenv -- n8n export:workflow --all --separate --pretty --output=workflows",
+    "export:creds": "dotenv -- n8n export:credentials --all --separate --output=credentials",
+    "import": "dotenv -- n8n import:workflow --separate --input=workflows"
+  },
+  "dependencies": {
+    "n8n": "^1.0.0"
+  },
+  "devDependencies": {
+    "dotenv-cli": "^11.0.0"
+  }
+}

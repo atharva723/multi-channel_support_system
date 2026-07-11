@@ -1,0 +1,357 @@
+﻿Omnichannel AI Support Sentinel: Production Blueprint & Specification
+This document details the architecture, data flow, mathematical routing models, and concrete schemas for the Omnichannel AI Support Sentinel. It serves as a comprehensive guide to building a scalable, low-latency, and friction-free customer support automation pipeline utilizing your core stack: n8n + FastAPI + Local/Hosted LLM + PostgreSQL/SQLite + Expo Dashboard.
+1. Architectural Philosophy: Bypassing Google's Sandbox
+Our prior R&D into the Google Business Profile (GBP) API identified major roadblocks for portfolio showcase developers and early-stage systems:
+* Physical Storefront Verification Audits: Google restricts production access to GBP APIs, requiring active business documentation and leaving sandbox developers with a permanent    (Queries Per Minute) quota.
+* Complex Oauth 2.0 Consent verification: Accessing user business accounts requires deep security audits and web consent flow approvals.
+* Short-lived Access Tokens: Google access tokens expire every 60 minutes, demanding background token refresher jobs and complex database tracking.
+The Omnichannel AI Support Sentinel addresses these problems by shifting the integration target from closed search engines to open, high-value workspace APIs (Discord, Slack, and standard IMAP).
+Why this Blueprint is Friction-Free:
+   1. Instant Discord App Verification: Discord bot tokens are generated instantly with zero developer verification or waiting times.
+   2. Personal/Free Slack Workspace Sandboxes: Developer apps can be set up in local test workspaces with complete read/write access.
+   3. IMAP Standard App Passwords: By using an app password with standard email protocols (IMAP/SMTP) via n8n, we bypass Google's highly restricted Google Workspace OAuth audits while still processing real-world emails.
+2. Low-Level Data Flow Diagram (DFD)
+The system behaves as a distributed real-time pipeline. Raw support inputs are captured via webhook listeners, processed through a central classifier, and routed based on calculated criticality.
+Level 0: Context Diagram
+                     +---------------------------------------+
+                    |                                       |
+                    |  Omnichannel AI Support Sentinel      |
+[ Community User ] -+---------> (Incoming Message)          |
+                    |                                       |
+[ Support Agent  ] <+-------- (Auto-Reply/Action Panel) ----+
+                    |                                       |
+                    +---------------------------------------+
+
+Level 1: Granular Data Flow
+   [ Discord Bot ] ----(Webhook)----\
+  [ Slack Bot ] ------(Webhook)-----+==> [ n8n Triage Router ]
+  [ IMAP Inbox ] -----(IMAP Poller)-/           ||
+                                                || Post Payload
+                                                vv
+                                        [ FastAPI Backend ]
+                                                ||
+                       +------------------------++------------------------+
+                       |                                                  |
+                       v (Evaluate Sentiment)                             v (If Critical)
+              [ LLM Router Engine ]                              [ PostgreSQL Database ]
+                       ||                                                 ||
+                       || Compute P(C|M)                                  || Insert Escalation
+                       vv                                                 vv
+            { P(C|M) < 0.8 }   { P(C|M) >= 0.8 }                 [ FastAPI SSE Gateway ]
+             /               \                                            ||
+            v                 v                                           vv
+   [ Auto-Reply Job ]   [ Escalate to Mobile ] <================== [ Expo Dashboard ]
+   (SMTP / Bot POST)                                               (Haptics / Zustand / Query)
+
+Level 2: State & Storage Interactions
+ +------------------+                +-------------------------+                +-----------------------+
+|  FastAPI Server  | --(Session)--> |  PostgreSQL/SQLite DB   | <-- (Poll/Mut) |   Expo Mobile Client  |
+|                  |                |                         |                |                       |
+|  • Handles OAuth |                |  • support_tickets      |                |  • useAuthStore.ts    |
+|  • Runs Local LLM|                |  • channel_configs      |                |  • useTickets.ts      |
+|  • Serves SSE    |                |  • escalation_states    |                |  • gorhom/bottom-sheet|
++------------------+                +-------------------------+                +-----------------------+
+
+3. Mathematical Modeling: Smart Sentiment Triage
+Instead of using hardcoded rules or simple keyword matching (which regularly fails to capture passive-aggressive or context-dependent frustration), the Sentinel routes messages using a combination of LLM-derived log-probabilities and channel SLA urgency models.
+3.1. Sentiment Criticality Probability
+Let a message payload be   . The local or API-driven LLM computes a semantic representation of the message, which is projected into a binary categorization layer mapping to Critical (  ) or Informational (  ).
+The critical classification probability    is defined using a softmax or logistic sigmoid transformation over the raw token probability logs of the classification tokens    and    generated by the model:
+  
+Where:
+   *    is the hidden-state output vector corresponding to the classification prompt template passed to the LLM.
+   *    is the target weighting matrix optimized to align with support SLAs.
+   *    is the bias threshold.
+If    (where the default threshold   ), the ticket is flagged as an Escalation and pushed to the human-in-the-loop mobile app. If   , it triggers the Auto-Response Engine to formulate and draft a conversational reply.
+3.2. SLA Urgency Scoring with Channel Decay
+To prioritize tickets in the mobile UI, we compute a dynamic Urgency Score    that scales exponentially based on elapsed wait time and the communication medium:
+  
+Where:
+      *    is the initial severity index calculated on ingest.
+      *    is the time elapsed in minutes since the message arrived.
+      *    is the channel-specific decay/priority constant:
+         *    (High conversational expectations)
+         *    (Business conversational expectations)
+         *    (Standard asynchronous expectations)
+Tickets with higher    are forced to the top of the Expo mobile dashboard’s @shopify/flash-list using custom query ordering.
+4. Backend Engineering: FastAPI Specifications
+FastAPI acts as our highly optimized, asynchronous data manager and LLM integration agent.
+Pydantic Schemas (app/schemas/triage.py)
+from pydantic import BaseModel, Field, HttpUrl
+from typing import Optional, Dict, Any
+from datetime import datetime
+
+class SupportIngestPayload(BaseModel):
+   channel: str = Field(..., description="Source medium: slack, discord, or email")
+   channel_id: str = Field(..., description="Internal channel or thread reference")
+   message_id: str = Field(..., description="Unique message ID generated by the source platform")
+   author_name: str = Field(..., description="Sender's display name")
+   author_contact: Optional[str] = Field(None, description="Email address or user handle")
+   content: str = Field(..., description="The raw support request string")
+   timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+class EscalationTicket(BaseModel):
+   id: int
+   channel: str
+   message_id: str
+   author_name: str
+   content: str
+   criticality_score: float
+   urgency_score: float
+   ai_draft_reply: str
+   status: str = "PENDING"  # PENDING, APPROVED, MODIFIED, DISMISSED
+   created_at: datetime
+
+Async Database Models (app/models/support.py)
+from sqlalchemy import Column, String, Integer, Float, DateTime, Text
+from sqlalchemy.ext.declarative import declarative_base
+from datetime import datetime
+
+Base = declarative_base()
+
+class Ticket(Base):
+   __tablename__ = "support_tickets"
+
+   id = Column(Integer, primary_key=True, index=True)
+   channel = Column(String(50), nullable=False)
+   channel_id = Column(String(100), nullable=False)
+   message_id = Column(String(100), unique=True, index=True, nullable=False)
+   author_name = Column(String(200), nullable=False)
+   author_contact = Column(String(200), nullable=True)
+   content = Column(Text, nullable=False)
+   
+   # Sentiment & Urgency Metrics
+   criticality_score = Column(Float, nullable=False, default=0.0)
+   urgency_score = Column(Float, nullable=False, default=0.0)
+   
+   # LLM outputs
+   ai_draft_reply = Column(Text, nullable=True)
+   status = Column(String(50), default="PENDING") # PENDING, APPROVED, REJECTED
+   
+   created_at = Column(DateTime, default=datetime.utcnow)
+   updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+5. Automation Layer: n8n Workflow Specifications
+n8n is the operational router of our architecture. It ingests messages, handles platform rate limiting, triggers FastAPI processing, and routes the responses.
+       [Webhook Ingest]
+             ||
+             vv
+  [Post to FastAPI /triage]
+             ||
+             vv
+     {Is Flagged Critical?}
+          /        \
+      (Yes)        (No)
+       /              \
+      v                v
+[Send SSE Signal]    [Send Approved Auto-Reply]
+(Expo Mobile App)     (Discord API / Slack POST)
+
+Raw JSON Export structure: n8n HTTP Request node calling FastAPI
+Configure an HTTP Request node inside your n8n workflow using this exact setup to pass raw platform messages to your FastAPI backend:
+{
+ "parameters": {
+   "method": "POST",
+   "url": "http://your-fastapi-host:8000/api/v1/support/triage",
+   "authentication": "genericCredentialType",
+   "genericAuthType": "httpHeaderAuth",
+   "sendBody": true,
+   "specifyBody": "json",
+   "jsonBody": "{\n  \"channel\": \"{{$json[\"channel\"]}}\",\n  \"channel_id\": \"{{$json[\"channel_id\"]}}\",\n  \"message_id\": \"{{$json[\"message_id\"]}}\",\n  \"author_name\": \"{{$json[\"author_name\"]}}\",\n  \"author_contact\": \"{{$json[\"author_contact\"]}}\",\n  \"content\": \"{{$json[\"content\"]}}\"\n}",
+   "options": {}
+ }
+}
+
+6. Mobile Application: Expo & Zustand Integration
+On the front end, we use a premium React Native / Expo environment designed with high physical feedback (Haptics) and strict state management using Zustand and TanStack Query.
+6.1. Auth & Configuration Store (src/hooks/useAuthStore.ts)
+To keep our user verified without complex storefront logins, we implement a lightweight session manager anchored in Expo's secure enclave storage.
+import { create } from 'zustand';
+import * as SecureStore from 'expo-secure-store';
+
+interface AuthState {
+ authToken: string | null;
+ agentName: string | null;
+ isAuthenticated: boolean;
+ initializeSession: () => Promise<void>;
+ authenticateAgent: (token: string, name: string) => Promise<void>;
+ deauthenticateAgent: () => Promise<void>;
+}
+
+export const useAuthStore = create<AuthState>((set) => ({
+ authToken: null,
+ agentName: null,
+ isAuthenticated: false,
+ 
+ initializeSession: async () => {
+   try {
+     const token = await SecureStore.getItemAsync('agent_jwt');
+     const name = await SecureStore.getItemAsync('agent_name');
+     if (token && name) {
+       set({ authToken: token, agentName: name, isAuthenticated: true });
+     }
+   } catch (e) {
+     console.warn('Session hydration failed:', e);
+   }
+ },
+
+ authenticateAgent: async (token, name) => {
+   await SecureStore.setItemAsync('agent_jwt', token);
+   await SecureStore.setItemAsync('agent_name', name);
+   set({ authToken: token, agentName: name, isAuthenticated: true });
+ },
+
+ deauthenticateAgent: async () => {
+   await SecureStore.deleteItemAsync('agent_jwt');
+   await SecureStore.deleteItemAsync('agent_name');
+   set({ authToken: null, agentName: null, isAuthenticated: false });
+ }
+}));
+
+6.2. High-Performance List & Spring physics UI Layout (src/app/(tabs)/index.tsx)
+This interface leverages the Zinc Theme (deep workspace styling) alongside spring physics from @gorhom/bottom-sheet and tactile notifications via expo-haptics.
+import React, { useRef, useMemo, useCallback } from 'react';
+import { View, Text, Pressable, TextInput } from 'react-native';
+import { FlashList } from '@shopify/flash-list';
+import BottomSheet from '@gorhom/bottom-sheet';
+import * as Haptics from 'expo-haptics';
+import { AlertTriangle, Send, Check } from 'lucide-react-native';
+
+interface Ticket {
+ id: string;
+ channel: string;
+ author_name: string;
+ content: string;
+ ai_draft_reply: string;
+ urgency_score: number;
+}
+
+export default function MobileEscalationDesk() {
+ const bottomSheetRef = useRef<BottomSheet>(null);
+ const snapPoints = useMemo(() => ['40%', '85%'], []);
+ const [selectedTicket, setSelectedTicket] = React.useState<Ticket | null>(null);
+ const [draftReply, setDraftReply] = React.useState<string>('');
+
+ const mockTickets: Ticket[] = [
+   {
+     id: '1',
+     channel: 'Discord',
+     author_name: 'DeveloperDan',
+     content: 'Database connection failed when testing the v2 checkout route. Urgent help needed.',
+     ai_draft_reply: 'Hi @DeveloperDan, our database cluster experienced a minor cold restart but is operational. Can you retry now and verify if the checkout succeeds?',
+     urgency_score: 9.2,
+   }
+ ];
+
+ const handleTicketSelect = useCallback((ticket: Ticket) => {
+   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+   setSelectedTicket(ticket);
+   setDraftReply(ticket.ai_draft_reply);
+   bottomSheetRef.current?.snapToIndex(0);
+ }, []);
+
+ const handleApprove = useCallback(() => {
+   Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+   // Execute API mutation here...
+   bottomSheetRef.current?.close();
+   setSelectedTicket(null);
+ }, []);
+
+ return (
+   <View className="flex-1 bg-zinc-950 px-4 pt-12">
+     {/* Dynamic Header Block */}
+     <View className="flex-row items-center justify-between mb-6">
+       <View className="flex-row items-center">
+         <AlertTriangle color="#ef4444" size={26} />
+         <Text className="text-2xl font-bold tracking-tight text-white ml-2">Active Alerts</Text>
+       </View>
+       <View className="bg-rose-500/10 px-3 py-1 rounded-full border border-rose-500/20">
+         <Text className="text-rose-500 text-xs font-bold uppercase tracking-widest">
+           {mockTickets.length} Escalated
+         </Text>
+       </View>
+     </View>
+
+     {/* Main FlashList Core */}
+     <View className="flex-1 w-full">
+       <FlashList
+         data={mockTickets}
+         estimatedItemSize={165}
+         renderItem={({ item }) => (
+           <Pressable 
+             onPress={() => handleTicketSelect(item)}
+             className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 mb-4 active:opacity-90"
+           >
+             <View className="flex-row justify-between items-center mb-2">
+               <Text className="text-xs font-bold text-zinc-500 uppercase tracking-widest">{item.channel}</Text>
+               <Text className="text-rose-500 text-xs font-semibold">Priority: {item.urgency_score.toFixed(1)}</Text>
+             </View>
+             
+             <Text className="text-zinc-50 text-base font-bold mb-1">{item.author_name}</Text>
+             <Text className="text-zinc-300 text-sm leading-relaxed mb-4" numberOfLines={2}>
+               "{item.content}"
+             </Text>
+
+             <View className="bg-zinc-950 border border-zinc-800/80 p-3 rounded-xl">
+               <Text className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest mb-1">Draft Response</Text>
+               <Text className="text-zinc-400 text-xs" numberOfLines={1}>"{item.ai_draft_reply}"</Text>
+             </View>
+           </Pressable>
+         )}
+       />
+     </View>
+
+     {/* Slide-Up Override Sheet */}
+     <BottomSheet
+       ref={bottomSheetRef}
+       index={-1}
+       snapPoints={snapPoints}
+       enablePanDownToClose
+       backgroundStyle={{ backgroundColor: '#09090b', borderTopWidth: 1, borderTopColor: '#27272a' }}
+       handleIndicatorStyle={{ backgroundColor: '#52525b' }}
+     >
+       {selectedTicket && (
+         <View className="p-6 flex-1 justify-between">
+           <View>
+             <Text className="text-zinc-500 text-xs font-bold uppercase tracking-widest mb-1">Edit Draft Reply</Text>
+             <Text className="text-white text-lg font-bold mb-4">Override response for {selectedTicket.author_name}</Text>
+             
+             {/* Draft Box */}
+             <View className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 min-h-[140px]">
+               <TextInput
+                 multiline
+                 value={draftReply}
+                 onChangeText={setDraftReply}
+                 style={{ color: '#f4f4f5', fontSize: 14, lineHeight: 20, textAlignVertical: 'top' }}
+               />
+             </View>
+           </View>
+
+           {/* Actions Button Row */}
+           <View className="flex-row space-x-3 mb-6">
+             <Pressable 
+               onPress={handleApprove}
+               className="flex-1 flex-row items-center justify-center bg-indigo-600 active:bg-indigo-700 rounded-2xl py-4"
+             >
+               <Check color="#ffffff" size={18} />
+               <Text className="text-white font-bold ml-2">Approve & Send</Text>
+             </Pressable>
+           </View>
+         </View>
+       )}
+     </BottomSheet>
+   </View>
+ );
+}
+
+7. Direct Resolution of GMB Research Bottlenecks
+Identified Problem (Google Maps GMB Integration)
+	Strategic Solution (Omnichannel Support Sentinel)
+	Physical Location Verification Audit Requirements
+	Bypassed. Discord and Slack require zero location validations. Email integrations utilize simple IMAP App Passwords.
+	Hourly background refresh token expires
+	Eliminated. Both Discord bots and Slack app tokens utilize permanent API keys that never expire, cutting out token table sync engines.
+	Sandbox restrictions during development
+	Friction-Free. Developers can create clean, local target test servers/workspaces for Discord/Slack in 2 minutes, allowing complete, live end-to-end sandbox execution.
+	Google Client Secret leaks on mobile runtime
+	Separated. Frontend application clients never see platform client secrets. All data validation and system handshakes happen on your FastAPI routing proxy, protecting your private server keys.
