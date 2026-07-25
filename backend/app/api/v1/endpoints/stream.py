@@ -23,7 +23,6 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.deps import Broker
-from app.models.account import Account
 from app.services.auth import SessionTokenError, decode_session_token
 from app.services.events import EventBroker
 

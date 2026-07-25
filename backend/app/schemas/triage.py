@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 
 def _utcnow() -> datetime:
@@ -20,10 +20,10 @@ def _utcnow() -> datetime:
 
 
 class SupportIngestPayload(BaseModel):
-    """Raw, normalized support message handed off from n8n to FastAPI."""
+    """Raw, normalized support message handed off to FastAPI by a channel worker."""
 
-    channel: Literal["slack", "discord", "email"] = Field(
-        ..., description="Source medium: slack, discord, or email"
+    channel: Literal["discord", "email"] = Field(
+        ..., description="Source medium: discord or email"
     )
     channel_id: str = Field(
         ..., description="Internal channel or thread reference"
@@ -41,8 +41,8 @@ class SupportIngestPayload(BaseModel):
         None,
         description=(
             "Inbound routing key identifying the connected account this message "
-            "belongs to (mailbox address / Discord guild id / Slack team id). "
-            "Used to resolve the tenant when the caller is not authenticated."
+            "belongs to (mailbox address / Discord guild id). Used to resolve "
+            "the tenant when the caller is not authenticated."
         ),
     )
 
@@ -60,8 +60,22 @@ class EscalationTicket(BaseModel):
     criticality_score: float
     urgency_score: float
     ai_draft_reply: Optional[str] = None
-    status: Literal["PENDING", "APPROVED", "MODIFIED", "DISMISSED"] = "PENDING"
+    status: Literal["PENDING", "APPROVED", "MODIFIED", "DISMISSED", "AUTO_REPLIED"] = "PENDING"
     created_at: datetime
+
+    @field_serializer("created_at")
+    def _serialize_created_at(self, value: datetime) -> str:
+        """Emit ISO-8601 in UTC with an explicit offset.
+
+        The DB stores ``created_at`` as a naive UTC timestamp (SQLite
+        ``func.now()``). Without a timezone designator, JS ``new Date()`` parses
+        it as *local* time, so the mobile app showed relative times skewed by the
+        device's UTC offset. Tagging naive values as UTC fixes this for every
+        client.
+        """
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat()
 
 
 class TriageDecision(str, Enum):
@@ -95,6 +109,7 @@ class TicketStatus(str, Enum):
     APPROVED = "APPROVED"  # agent accepted the draft as-is -> send
     MODIFIED = "MODIFIED"  # agent edited the draft -> send edited text
     DISMISSED = "DISMISSED"  # not actionable / handled elsewhere
+    AUTO_REPLIED = "AUTO_REPLIED"  # non-critical -> AI replied automatically
 
 
 class TicketStatusUpdate(BaseModel):

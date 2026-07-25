@@ -1,0 +1,52 @@
+{
+  "name": "Omnichannel Sentinel — KB Website Resync (Scheduler)",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24
+            }
+          ]
+        }
+      },
+      "id": "a1111111-1111-4111-8111-aaaaaaaaaaaa",
+      "name": "Every 24h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-320, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SENTINEL_BACKEND_URL || 'http://localhost:8000' }}/api/v1/kb/sources/resync-all",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.SENTINEL_ACCOUNT_TOKEN }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b1111111-1111-4111-8111-bbbbbbbbbbbb",
+      "name": "Resync All Website Sources",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-80, 0]
+    }
+  ],
+  "connections": {
+    "Every 24h": {
+      "main": [[{ "node": "Resync All Website Sources", "type": "main", "index": 0 }]]
+    }
+  }
+}

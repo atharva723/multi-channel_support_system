@@ -53,16 +53,23 @@ def decode_session_token(token: str) -> int:
         raise SessionTokenError("Malformed account id in token.") from exc
 
 
-def create_oauth_state(provider: str, link_account_id: int | None = None) -> str:
+def create_oauth_state(
+    provider: str,
+    link_account_id: int | None = None,
+    redirect_to: str | None = None,
+) -> str:
     """Create a short-lived signed state token for an OAuth round-trip.
 
-    Encodes the provider and (optionally) the account to link the new connection
-    to, protecting against CSRF without server-side session storage.
+    Encodes the provider, the optional account to link the new connection to,
+    and an optional client-supplied ``redirect_to`` (the mobile app's deep link)
+    so the callback can return the session token to the right place. Protects
+    against CSRF without server-side session storage.
     """
     now = datetime.now(timezone.utc)
     payload = {
         "provider": provider,
         "link": link_account_id,
+        "redirect_to": redirect_to,
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=15)).timestamp()),
         "typ": "oauth_state",
@@ -70,8 +77,8 @@ def create_oauth_state(provider: str, link_account_id: int | None = None) -> str
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
-def decode_oauth_state(state: str) -> tuple[str, int | None]:
-    """Validate an OAuth state token; return ``(provider, link_account_id)``."""
+def decode_oauth_state(state: str) -> tuple[str, int | None, str | None]:
+    """Validate an OAuth state token; return ``(provider, link, redirect_to)``."""
     try:
         payload = jwt.decode(
             state, settings.jwt_secret, algorithms=[settings.jwt_algorithm]
@@ -80,4 +87,4 @@ def decode_oauth_state(state: str) -> tuple[str, int | None]:
         raise SessionTokenError("Invalid or expired OAuth state.") from exc
     if payload.get("typ") != "oauth_state":
         raise SessionTokenError("Wrong token type for OAuth state.")
-    return payload.get("provider"), payload.get("link")
+    return payload.get("provider"), payload.get("link"), payload.get("redirect_to")

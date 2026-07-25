@@ -1,6 +1,6 @@
 """Provider registry bootstrap.
 
-Registers the real channel providers (Google, Discord, Slack) at import time so
+Registers the real channel providers (Google, Discord) at import time so
 the rest of the app can resolve them via ``get_provider``. Tests may register a
 stub provider to exercise the generic OAuth machinery without external calls.
 """
@@ -18,18 +18,15 @@ from app.services.providers.base import (
 )
 from app.services.providers.discord import DiscordProvider
 from app.services.providers.google import GoogleProvider
-from app.services.providers.slack import SlackProvider
 
 # Register the built-in real providers.
 register_provider(GoogleProvider())
 register_provider(DiscordProvider())
-register_provider(SlackProvider())
 
 # Map a source channel (as stored on a Ticket) to the provider that sends it.
 CHANNEL_TO_PROVIDER = {
     "email": "google",
     "discord": "discord",
-    "slack": "slack",
 }
 
 

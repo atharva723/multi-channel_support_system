@@ -76,6 +76,26 @@ class OAuthProvider(abc.ABC):
         """Refresh an expired access token. Override where supported."""
         raise NotImplementedError(f"{self.name} does not support token refresh.")
 
+    async def exchange_code_pkce(
+        self, code: str, code_verifier: str, redirect_uri: str
+    ) -> ProviderTokens:
+        """Exchange an app-obtained auth code (PKCE) for tokens.
+
+        Used by the mobile Option-B flow where the app owns the redirect URI
+        (e.g. ``sentinel://oauthredirect``) and holds the PKCE verifier.
+        """
+        raise NotImplementedError(f"{self.name} does not support PKCE exchange.")
+
+    async def exchange_server_auth_code(self, code: str) -> ProviderTokens:
+        """Exchange a native-SDK serverAuthCode for tokens.
+
+        Used by providers whose mobile SDK returns an offline serverAuthCode
+        (e.g. Google Sign-In) that the backend swaps using the Web client secret.
+        """
+        raise NotImplementedError(
+            f"{self.name} does not support serverAuthCode exchange."
+        )
+
 
 # --- Registry -------------------------------------------------------------
 _registry: dict[str, OAuthProvider] = {}

@@ -155,6 +155,45 @@ async def resolve_account_by_external_ref(
     return conn.account_id if conn else None
 
 
+async def autolink_discord_guild(
+    db: AsyncSession, guild_id: str
+) -> int | None:
+    """Dev convenience: link an unmapped Discord guild to the sole Discord account.
+
+    Returns the account id if a link was made (or already exists), else None.
+    Only fires when EXACTLY ONE Discord connection exists, so it is safe for a
+    single-tenant hobby setup but must stay disabled in real multi-tenant prod.
+    """
+    conns = list(
+        (
+            await db.scalars(
+                select(ChannelConnection).where(
+                    ChannelConnection.provider == "discord"
+                )
+            )
+        ).all()
+    )
+    if len(conns) != 1:
+        return None
+    conn = conns[0]
+    conn.external_ref = guild_id
+    await db.commit()
+    return conn.account_id
+
+
+async def link_discord_guild(
+    db: AsyncSession, *, account_id: int, guild_id: str
+) -> ChannelConnection | None:
+    """Explicitly set an account's Discord connection to route a guild id."""
+    conn = await get_connection(db, account_id=account_id, provider="discord")
+    if conn is None:
+        return None
+    conn.external_ref = guild_id
+    await db.commit()
+    await db.refresh(conn)
+    return conn
+
+
 async def delete_connection(
     db: AsyncSession, *, account_id: int, connection_id: int
 ) -> bool:

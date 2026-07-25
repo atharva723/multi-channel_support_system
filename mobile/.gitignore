@@ -39,3 +39,7 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# FCM service-account key (secret - never commit)
+credentials/
+*fcm-service-account*.json

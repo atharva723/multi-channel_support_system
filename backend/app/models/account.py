@@ -97,6 +97,11 @@ class ChannelConnection(Base):
 
     account: Mapped["Account"] = relationship(back_populates="connections")
 
+    @property
+    def has_refresh(self) -> bool:
+        """True if a refresh token is stored (so tokens can be renewed silently)."""
+        return bool(self.refresh_token_enc)
+
     def __repr__(self) -> str:  # pragma: no cover
         return (
             f"<ChannelConnection id={self.id} account_id={self.account_id} "

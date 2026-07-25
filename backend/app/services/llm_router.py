@@ -62,6 +62,33 @@ _REPLY_PROMPT = (
     "Your reply:"
 )
 
+# Grounded variant: the model must answer ONLY from the provided knowledge-base
+# context and must not invent anything beyond it.
+_GROUNDED_REPLY_PROMPT = (
+    "You are a helpful, empathetic customer-support agent for this business. "
+    "Answer the customer using ONLY the business knowledge base context below. "
+    "Do NOT use outside knowledge and do NOT invent facts, prices, policies, "
+    "ticket numbers, or timelines. If the answer is fully contained in the "
+    "context, reply concisely (2-4 sentences), warmly, and directly. Do not "
+    "include a subject line or email headers.\n\n"
+    "Business knowledge base context:\n\"\"\"\n{context}\n\"\"\"\n\n"
+    "Customer ({author_name}) wrote:\n\"\"\"\n{content}\n\"\"\"\n\n"
+    "Your reply:"
+)
+
+# Used when the customer's question is NOT covered by the knowledge base
+# (out of scope): politely acknowledge and defer to a human teammate.
+_OUT_OF_SCOPE_PROMPT = (
+    "You are a helpful, empathetic customer-support agent. The customer's "
+    "question is NOT covered by the business's available information, so you "
+    "cannot answer it yourself. Write a short (1-2 sentences), warm reply that "
+    "acknowledges their message, does NOT attempt to answer or guess, and "
+    "reassures them that a team member will follow up shortly. Do not include a "
+    "subject line or email headers.\n\n"
+    "Customer ({author_name}) wrote:\n\"\"\"\n{content}\n\"\"\"\n\n"
+    "Your reply:"
+)
+
 
 class LLMRouterError(RuntimeError):
     """Raised when the LLM backend is unreachable or returns an unusable payload."""
@@ -117,13 +144,42 @@ class LLMRouter:
             raw_token=raw_token,
         )
 
-    async def generate_draft_reply(self, *, content: str, author_name: str) -> str:
-        """Generate a conversational auto-reply draft for a support message."""
+    async def generate_draft_reply(
+        self,
+        *,
+        content: str,
+        author_name: str,
+        context: list[str] | None = None,
+        out_of_scope: bool = False,
+    ) -> str:
+        """Generate a conversational auto-reply draft for a support message.
+
+        Three modes:
+          * ``out_of_scope=True`` — the KB has nothing relevant; politely defer
+            to a human without attempting an answer.
+          * ``context`` non-empty — ground the reply strictly in the provided
+            knowledge-base passages.
+          * neither — the account has no KB; behave as a general assistant.
+        """
+        if out_of_scope:
+            prompt = _OUT_OF_SCOPE_PROMPT.format(
+                content=content.strip(), author_name=author_name
+            )
+        elif context:
+            joined = "\n\n---\n\n".join(context)
+            prompt = _GROUNDED_REPLY_PROMPT.format(
+                context=joined.strip(),
+                content=content.strip(),
+                author_name=author_name,
+            )
+        else:
+            prompt = _REPLY_PROMPT.format(
+                content=content.strip(), author_name=author_name
+            )
+
         payload = {
             "model": settings.ollama_model,
-            "prompt": _REPLY_PROMPT.format(
-                content=content.strip(), author_name=author_name
-            ),
+            "prompt": prompt,
             "stream": False,
             "options": {
                 "temperature": settings.llm_reply_temperature,

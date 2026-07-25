@@ -1,14 +1,14 @@
 # **The Simple Guide to Omnichannel (App-First Perspective)**
 
-If you are running a business, your customers are everywhere. Some prefer to send an **email**, some are chatting on your community **Discord**, and others are pinging your team on **Slack**.
+If you are running a business, your customers are everywhere. Some prefer to send an **email**, and others are chatting on your community **Discord**.
 
-Normally, keeping up with this means having three different apps open, constantly switching tabs, and inevitably missing messages.
+Normally, keeping up with this means having different apps open, constantly switching tabs, and inevitably missing messages.
 
 **"Omnichannel" changes this by making the app do all the juggling for you.**
 
 ## **1\. What does it look like in the App? (The Simple Explanation)**
 
-To the person using your mobile app, "Omnichannel" feels like magic. It condenses three entirely different communication networks into **one single, beautiful inbox**.
+To the person using your mobile app, "Omnichannel" feels like magic. It condenses two different communication networks into **one single, beautiful inbox**.
 
 * **The Unified Inbox:** When a customer has a major bug or query, it doesn't matter if they emailed you or posted it in a Discord channel. In your app, it lands as a clean, uniform card on your **Escalation Desk**.  
 * **One-Click Replies:** You don't need to open Discord to reply to a Discord user. You simply type your reply inside your app's bottom drawer and hit "Approve & Send."  
@@ -21,30 +21,35 @@ Essentially, **the app hides all the chaotic plumbing** of the internet so you c
 Behind this smooth mobile interface is a highly synchronized, low-latency automated pipeline. Here is the path a message takes from the customer to your phone:
 
 \[ Customer Message \]   
-       │ (Discord, Slack, or Email)  
+       │ (Discord or Email)  
        ▼  
- \[ 1\. n8n Router \] ──(Catches the message immediately)  
+ \[ 1\. Channel Listener \] ──(Catches the message immediately)  
        │  
        ▼  
 \[ 2\. FastAPI Brain \] ──(Runs AI classification & checks urgency)  
        │  
-       ├─► \[ P(C|M) \< 0.8 \] ──► (Drafts a friendly Auto-Reply)  
+       ├─► \[ P(C|M) \< 0.8 \] ──► (Drafts and sends a friendly Auto-Reply)  
        │  
        └─► \[ P(C|M) \>= 0.8 \] ──► (Saves to DB as "Critical Escalation")  
                                         │  
                                         ▼  
                                \[ 3\. Expo Mobile Client \]   
-                               (Instant Push Notification)
+                               (Instant live update over SSE)
 
-### **Step 1: The Webhook Listeners (n8n)**
+### **Step 1: The Channel Listeners**
 
-We have lightweight "listeners" set up on Discord, Slack, and your Email server. The absolute millisecond a customer sends a message, an automation tool called **n8n** intercepts it and packages it into a neat data bundle (sender name, platform, message text).
+We run lightweight "listeners" for each channel: a **Discord gateway bot** that
+hears new messages the moment they're posted, and a **Gmail poller** that checks
+the connected mailbox every ~45 seconds. Each one packages a new message into a
+neat data bundle (sender name, platform, message text) and forwards it to the
+backend. *(An automation tool, n8n, is available as an optional fallback but is
+not on the main path.)*
 
 ### **Step 2: The Sentiment Brain (FastAPI & LLM)**
 
-n8n instantly shoots this data bundle over to your **FastAPI backend**.
-
-The backend passes the message to an AI Language Model (LLM) to determine if the customer is frustrated, angry, or has a critical system bug.
+The listener sends this data bundle to your **FastAPI backend**, which passes the
+message to a local AI Language Model (LLM) to determine if the customer is
+frustrated, angry, or has a critical system bug.
 
 Under the hood, we calculate the probability of the message being critical, represented as ![][image1]:
 

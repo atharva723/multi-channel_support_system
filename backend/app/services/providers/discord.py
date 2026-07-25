@@ -50,6 +50,22 @@ class DiscordProvider(OAuthProvider):
         payload = await self._post_form(_TOKEN_URL, data)
         return self._tokens_from_payload(payload)
 
+    async def exchange_code_pkce(
+        self, code: str, code_verifier: str, redirect_uri: str
+    ) -> ProviderTokens:
+        # App-owned redirect (sentinel://oauthredirect) + PKCE verifier. Discord
+        # is a confidential client so the secret is still sent server-side here.
+        data = {
+            "client_id": settings.discord_client_id,
+            "client_secret": settings.discord_client_secret,
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "code_verifier": code_verifier,
+        }
+        payload = await self._post_form(_TOKEN_URL, data)
+        return self._tokens_from_payload(payload)
+
     async def refresh(self, refresh_token: str) -> ProviderTokens:
         data = {
             "client_id": settings.discord_client_id,

@@ -1,32 +1,28 @@
 """Per-account reply sending.
 
-Replaces the single-tenant n8n dispatch as the primary send path: when an agent
-approves/edits a reply, we look up *that account's* connected provider for the
-ticket's channel, decrypt its tokens, refresh if needed, and send through the
-provider (Gmail / Discord / Slack). If the account has no suitable connection but
-a legacy n8n webhook is configured, we fall back to it so nothing silently drops.
+When an agent approves/edits a reply (or a non-critical ticket is auto-replied),
+we look up *that account's* connected provider for the ticket's channel, decrypt
+its tokens, refresh if needed, and send through the provider (Gmail / Discord).
+Each account sends with its own credentials — there is no shared send path.
 """
 
 from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.models.support import Ticket
 from app.services import connections as conn_store
-from app.services.dispatch import dispatch_reply, is_dispatch_enabled
 from app.services.providers import ProviderError, get_provider, provider_for_channel
 
 
 class SendError(RuntimeError):
-    """Raised when an approved reply could not be sent through any path."""
+    """Raised when an approved reply could not be sent."""
 
 
 async def send_reply(db: AsyncSession, *, account_id: int, ticket: Ticket) -> str:
-    """Send a ticket's current reply for an account. Returns the path used.
+    """Send a ticket's current reply for an account. Returns the provider used.
 
-    Path is ``"<provider>"`` for a native provider send or ``"n8n"`` for the
-    legacy fallback. Raises :class:`SendError` if neither path can deliver.
+    Raises :class:`SendError` if the account has no connection able to deliver.
     """
     provider_name = provider_for_channel(ticket.channel)
     connection = await conn_store.get_connection(
@@ -64,14 +60,9 @@ async def send_reply(db: AsyncSession, *, account_id: int, ticket: Ticket) -> st
         except ProviderError as exc:
             raise SendError(f"{provider_name} send failed: {exc}") from exc
 
-    # No native connection: fall back to n8n if configured.
-    if is_dispatch_enabled():
-        await dispatch_reply(ticket)
-        return "n8n"
-
     raise SendError(
-        f"Account {account_id} has no '{provider_name}' connection and no n8n "
-        "fallback configured; cannot send the reply."
+        f"Account {account_id} has no '{provider_name}' connection; "
+        "cannot send the reply."
     )
 
 

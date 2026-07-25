@@ -1,15 +1,21 @@
 {
   "expo": {
-    "name": "mobile",
-    "slug": "mobile",
+    "name": "Sentinel",
+    "slug": "sentinel",
+    "owner": "20.atharva",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
+    "scheme": "sentinel",
     "userInterfaceStyle": "light",
+    "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.sentinel.app"
     },
     "android": {
+      "package": "com.sentinel.app",
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -19,10 +25,34 @@
       "predictiveBackGestureEnabled": false
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
     },
     "plugins": [
-      "expo-secure-store"
-    ]
+      "expo-secure-store",
+      "expo-router",
+      "expo-web-browser",
+      "expo-font",
+      "expo-image",
+      "expo-splash-screen",
+      "expo-dev-client",
+      "@react-native-google-signin/google-signin",
+      [
+        "expo-notifications",
+        {
+          "color": "#0B5D3B",
+          "defaultChannel": "escalations"
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "132bcdde-fb27-4889-bd6c-89ec705eb79b"
+      }
+    }
   }
 }

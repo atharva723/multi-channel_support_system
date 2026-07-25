@@ -9,10 +9,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import auth, stream, tickets, triage
+from app.api.v1.endpoints import auth, kb, notifications, stream, tickets, triage
 
 api_router = APIRouter()
 api_router.include_router(auth.router)
 api_router.include_router(triage.router)
 api_router.include_router(tickets.router)
 api_router.include_router(stream.router)
+api_router.include_router(notifications.router)
+api_router.include_router(kb.router)

@@ -16,6 +16,7 @@ from app import __version__
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.database import dispose_db, init_db
+from app.services.embeddings import close_embedding_client
 from app.services.llm_router import close_llm_router
 
 
@@ -25,6 +26,7 @@ async def lifespan(app: FastAPI):
     await init_db()
     yield
     await close_llm_router()
+    await close_embedding_client()
     await dispose_db()
 
 

@@ -13,14 +13,20 @@ Sign-in *is* connecting a channel. The flow:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Header, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentAccount, DBSession
+from app.api.deps import ApiKeyGuard, CurrentAccount, DBSession
 from app.core.config import settings
 from app.models.account import Account
-from app.schemas.account import AccountOut, ConnectionOut, MeOut, SessionOut
+from app.schemas.account import (
+    AccountOut,
+    ConnectionOut,
+    ExchangeRequest,
+    MeOut,
+    SessionOut,
+)
 from app.services import connections as conn_store
 from app.services.auth import (
     SessionTokenError,
@@ -43,6 +49,82 @@ async def list_providers() -> dict:
     return {"providers": available_providers()}
 
 
+@router.post(
+    "/auth/{provider}/exchange",
+    response_model=SessionOut,
+    dependencies=[ApiKeyGuard],
+    summary="Option B: exchange an app-obtained OAuth code for a session",
+)
+async def exchange(
+    provider: str,
+    body: ExchangeRequest,
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = DBSession,
+) -> SessionOut:
+    """App-owned OAuth exchange (no backend redirect URI involved).
+
+    The mobile app performs the browser/native OAuth itself (fixed redirect =
+    the app's own identity) and posts the resulting code here. The backend does
+    the confidential token exchange and stores tokens encrypted — same security
+    model as the redirect flow, but the redirect URI never depends on the
+    backend's (changing) public address.
+
+    If a valid Bearer session is presented (the user is adding a second channel
+    while signed in), the new connection is linked to that existing account.
+    """
+    try:
+        prov = get_provider(provider)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    try:
+        if body.server_auth_code:
+            tokens = await prov.exchange_server_auth_code(body.server_auth_code)
+        elif body.code and body.code_verifier and body.redirect_uri:
+            tokens = await prov.exchange_code_pkce(
+                body.code, body.code_verifier, body.redirect_uri
+            )
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Provide either 'server_auth_code' (native SDK) or "
+                    "'code'+'code_verifier'+'redirect_uri' (PKCE)."
+                ),
+            )
+        identity = await prov.fetch_identity(tokens)
+    except ProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"OAuth exchange failed: {exc}",
+        ) from exc
+    except NotImplementedError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Resolve the account to link to: explicit body value wins, else a valid
+    # Bearer session (adding a channel while signed in).
+    link_account_id = body.link_account_id
+    if link_account_id is None and authorization and authorization.lower().startswith("bearer "):
+        try:
+            link_account_id = decode_session_token(authorization.split(" ", 1)[1].strip())
+        except SessionTokenError:
+            link_account_id = None
+
+    account, _connection, is_new = await conn_store.connect_provider(
+        db,
+        provider=provider,
+        tokens=tokens,
+        identity=identity,
+        link_account_id=link_account_id,
+    )
+    return SessionOut(
+        access_token=create_session_token(account.id),
+        account=AccountOut.model_validate(account),
+        connected_provider=provider,
+        is_new_account=is_new,
+    )
+
+
 @router.get(
     "/auth/{provider}/login",
     response_model=None,
@@ -53,6 +135,10 @@ async def login(
     request: Request,
     redirect: bool = Query(
         default=False, description="302 to the provider instead of returning JSON."
+    ),
+    redirect_to: str | None = Query(
+        default=None,
+        description="Deep link the callback should return the session token to.",
     ),
     authorization: str | None = None,
 ) -> dict | RedirectResponse:
@@ -70,7 +156,7 @@ async def login(
         except SessionTokenError:
             link_account_id = None
 
-    state = create_oauth_state(provider, link_account_id)
+    state = create_oauth_state(provider, link_account_id, redirect_to)
     url = prov.authorize_url(state)
     if redirect:
         return RedirectResponse(url)
@@ -90,7 +176,7 @@ async def callback(
     json: bool = Query(default=False, description="Return JSON instead of redirect."),
 ):
     try:
-        state_provider, link_account_id = decode_oauth_state(state)
+        state_provider, link_account_id, redirect_to = decode_oauth_state(state)
     except SessionTokenError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if state_provider != provider:
@@ -127,13 +213,67 @@ async def callback(
             is_new_account=is_new,
         )
 
-    # Redirect back into the app (e.g. a mobile deep link) carrying the token.
-    sep = "&" if "?" in settings.oauth_success_redirect else "?"
+    # Redirect back into the app. Prefer the client-supplied deep link (from the
+    # mobile app) so OAuth works in both Expo Go and dev builds; fall back to the
+    # configured default.
+    target_base = redirect_to or settings.oauth_success_redirect
+    sep = "&" if "?" in target_base else "?"
     target = (
-        f"{settings.oauth_success_redirect}{sep}token={session_token}"
+        f"{target_base}{sep}token={session_token}"
         f"&provider={provider}&new={str(is_new).lower()}"
     )
     return RedirectResponse(target)
+
+
+@router.get(
+    "/connections/discord/guilds",
+    summary="List Discord servers the connected user belongs to",
+)
+async def discord_guilds(
+    account: Account = CurrentAccount,
+    db: AsyncSession = DBSession,
+) -> dict:
+    conn = await conn_store.get_connection(
+        db, account_id=account.id, provider="discord"
+    )
+    if conn is None:
+        raise HTTPException(status_code=404, detail="No Discord connection.")
+    import httpx
+
+    tokens = conn_store.load_tokens(conn)
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(
+            "https://discord.com/api/users/@me/guilds",
+            headers={"Authorization": f"Bearer {tokens.access_token}"},
+        )
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Discord guilds fetch failed: {resp.status_code} {resp.text}",
+        )
+    guilds = [{"id": g["id"], "name": g["name"]} for g in resp.json()]
+    return {"guilds": guilds, "linked_guild": conn.external_ref}
+
+
+@router.post(
+    "/connections/discord/link-guild",
+    response_model=ConnectionOut,
+    summary="Route a Discord server's messages to this account",
+)
+async def link_discord_guild(
+    body: dict,
+    account: Account = CurrentAccount,
+    db: AsyncSession = DBSession,
+) -> ConnectionOut:
+    guild_id = str(body.get("guild_id", "")).strip()
+    if not guild_id:
+        raise HTTPException(status_code=422, detail="guild_id is required.")
+    conn = await conn_store.link_discord_guild(
+        db, account_id=account.id, guild_id=guild_id
+    )
+    if conn is None:
+        raise HTTPException(status_code=404, detail="No Discord connection.")
+    return ConnectionOut.model_validate(conn)
 
 
 @router.get("/me", response_model=MeOut, summary="Current account + connections")
